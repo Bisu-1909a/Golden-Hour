@@ -15,8 +15,19 @@ export interface Session {
 
 export type {
   Database,
-  Profile,
-  EmergencyContact,
   Hospital,
-  EmergencyEvent,
+  HospitalCapability,
+  HospitalResource,
+  StaffMember,
+  TaskTemplate,
+  Alert,
+  AlertTask,
+  AuditLog,
+  ActiveAlertEscalation,
+  EmergencyCategory,
+  AlertStatus,
+  TaskStatus,
+  TaskRole,
+  EscalationLevel,
+  RefusalReason,
 } from "./database";
