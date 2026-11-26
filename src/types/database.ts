@@ -4,476 +4,543 @@ export type Json =
   | boolean
   | null
   | { [key: string]: Json | undefined }
-  | Json[]
+  | Json[];
 
-export type EmergencyCategory =
-  | 'chest_pain'
-  | 'stroke_signs'
-  | 'severe_bleeding'
-  | 'severe_breathlessness'
+export type AlertState =
+  | 'DRAFT'
+  | 'SENT'
+  | 'ACKNOWLEDGED'
+  | 'CLAIMING'
+  | 'ALL_CLAIMED'
+  | 'ARRIVED'
+  | 'CLOSED'
+  | 'CANCELLED'
+  | 'EXPIRED';
 
-export type AlertStatus =
-  | 'created'
-  | 'acknowledged'
-  | 'ready'
-  | 'arrived'
-  | 'closed'
-  | 'diverted'
-  | 'cancelled'
+export type TaskState = 'OPEN' | 'CLAIMED' | 'DONE' | 'ESCALATED';
 
-export type TaskStatus =
-  | 'unclaimed'
-  | 'claimed'
-  | 'completed'
-
-export type TaskRole =
-  | 'reception'
+export type StaffRole =
   | 'doctor'
   | 'nurse'
-  | 'pharmacy'
-  | 'equipment'
-  | 'transport'
   | 'counter'
-  | 'in_charge'
-  | 'admin'
+  | 'medicine'
+  | 'equipment'
+  | 'stretcher'
+  | 'supervisor'
+  | 'operator';
 
-export type EscalationLevel =
-  | 'normal'
-  | 'amber'
-  | 'red'
+export type TeamType = 'counter' | 'medicine' | 'equipment' | 'stretcher';
 
-export type RefusalReason =
-  | 'no_bed'
-  | 'no_team'
-  | 'equipment_unavailable'
-  | 'at_capacity'
-  | 'other'
+export type CancelReason =
+  | 'changed_hospital'
+  | 'not_coming'
+  | 'duplicate'
+  | 'no_arrival'
+  | 'other';
+
+export type NotificationChannel =
+  | 'in_app_chime'
+  | 'phone_push'
+  | 'supervisor_wall'
+  | 'sms';
+
+export type NotificationStatus = 'PENDING' | 'SENT' | 'FAILED';
 
 export interface Database {
   public: {
     Tables: {
-      hospitals: {
+      facilities: {
         Row: {
-          id: string
-          code: string
-          name: string
-          short_name: string
-          district: string
-          state: string
-          address: string
-          latitude: number
-          longitude: number
-          phone_number: string
-          emergency_phone: string
-          entrance_notes: string | null
-          is_active: boolean
-          created_at: string
-          updated_at: string
-        }
+          id: string;
+          name: string;
+          area: string | null;
+          phone: string | null;
+          distance_min: number;
+          capabilities: string[];
+          ed_beds_total: number;
+          ed_beds_free: number;
+          night_doctor: boolean;
+          is_active: boolean;
+          created_at: string;
+          updated_at: string;
+        };
         Insert: {
-          id?: string
-          code: string
-          name: string
-          short_name: string
-          district?: string
-          state?: string
-          address: string
-          latitude: number
-          longitude: number
-          phone_number: string
-          emergency_phone: string
-          entrance_notes?: string | null
-          is_active?: boolean
-          created_at?: string
-          updated_at?: string
-        }
+          id?: string;
+          name: string;
+          area?: string | null;
+          phone?: string | null;
+          distance_min?: number;
+          capabilities?: string[];
+          ed_beds_total?: number;
+          ed_beds_free?: number;
+          night_doctor?: boolean;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
         Update: {
-          id?: string
-          code?: string
-          name?: string
-          short_name?: string
-          district?: string
-          state?: string
-          address?: string
-          latitude?: number
-          longitude?: number
-          phone_number?: string
-          emergency_phone?: string
-          entrance_notes?: string | null
-          is_active?: boolean
-          created_at?: string
-          updated_at?: string
-        }
-      }
-      hospital_capabilities: {
+          id?: string;
+          name?: string;
+          area?: string | null;
+          phone?: string | null;
+          distance_min?: number;
+          capabilities?: string[];
+          ed_beds_total?: number;
+          ed_beds_free?: number;
+          night_doctor?: boolean;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      staff: {
         Row: {
-          id: string
-          hospital_id: string
-          category: EmergencyCategory
-          is_available: boolean
-          ct_scanner_active: boolean
-          cath_lab_active: boolean
-          blood_bank_active: boolean
-          ventilator_active: boolean
-          oxygen_supply_active: boolean
-          last_confirmed_at: string
-          confirmed_by: string
-          updated_at: string
-        }
+          id: string;
+          user_id: string | null;
+          facility_id: string | null;
+          full_name: string;
+          role: StaffRole;
+          team: TeamType | null;
+          pin_hash: string;
+          is_on_shift: boolean;
+          created_at: string;
+        };
         Insert: {
-          id?: string
-          hospital_id: string
-          category: EmergencyCategory
-          is_available?: boolean
-          ct_scanner_active?: boolean
-          cath_lab_active?: boolean
-          blood_bank_active?: boolean
-          ventilator_active?: boolean
-          oxygen_supply_active?: boolean
-          last_confirmed_at?: string
-          confirmed_by?: string
-          updated_at?: string
-        }
+          id?: string;
+          user_id?: string | null;
+          facility_id?: string | null;
+          full_name: string;
+          role: StaffRole;
+          team?: TeamType | null;
+          pin_hash?: string;
+          is_on_shift?: boolean;
+          created_at?: string;
+        };
         Update: {
-          id?: string
-          hospital_id?: string
-          category?: EmergencyCategory
-          is_available?: boolean
-          ct_scanner_active?: boolean
-          cath_lab_active?: boolean
-          blood_bank_active?: boolean
-          ventilator_active?: boolean
-          oxygen_supply_active?: boolean
-          last_confirmed_at?: string
-          confirmed_by?: string
-          updated_at?: string
-        }
-      }
-      hospital_resources: {
+          id?: string;
+          user_id?: string | null;
+          facility_id?: string | null;
+          full_name?: string;
+          role?: StaffRole;
+          team?: TeamType | null;
+          pin_hash?: string;
+          is_on_shift?: boolean;
+          created_at?: string;
+        };
+      };
+      playbooks: {
         Row: {
-          id: string
-          hospital_id: string
-          total_emergency_beds: number
-          available_emergency_beds: number
-          held_beds: number
-          active_teams_count: number
-          last_updated_at: string
-          updated_by: string | null
-        }
+          id: string;
+          key: string;
+          name: string;
+          version: number;
+        };
         Insert: {
-          id?: string
-          hospital_id: string
-          total_emergency_beds?: number
-          available_emergency_beds?: number
-          held_beds?: number
-          active_teams_count?: number
-          last_updated_at?: string
-          updated_by?: string | null
-        }
+          id?: string;
+          key: string;
+          name: string;
+          version?: number;
+        };
         Update: {
-          id?: string
-          hospital_id?: string
-          total_emergency_beds?: number
-          available_emergency_beds?: number
-          held_beds?: number
-          active_teams_count?: number
-          last_updated_at?: string
-          updated_by?: string | null
-        }
-      }
-      staff_members: {
+          id?: string;
+          key?: string;
+          name?: string;
+          version?: number;
+        };
+      };
+      playbook_tasks: {
         Row: {
-          id: string
-          hospital_id: string
-          name: string
-          role: TaskRole
-          pin_hash: string
-          is_duty_lead: boolean
-          is_active: boolean
-          created_at: string
-          updated_at: string
-        }
+          id: string;
+          playbook_id: string;
+          team: TeamType;
+          title: string;
+          detail: string | null;
+          position: number;
+          sla_seconds: number;
+          backup_staff: string | null;
+        };
         Insert: {
-          id?: string
-          hospital_id: string
-          name: string
-          role: TaskRole
-          pin_hash: string
-          is_duty_lead?: boolean
-          is_active?: boolean
-          created_at?: string
-          updated_at?: string
-        }
+          id?: string;
+          playbook_id: string;
+          team: TeamType;
+          title: string;
+          detail?: string | null;
+          position: number;
+          sla_seconds: number;
+          backup_staff?: string | null;
+        };
         Update: {
-          id?: string
-          hospital_id?: string
-          name?: string
-          role?: TaskRole
-          pin_hash?: string
-          is_duty_lead?: boolean
-          is_active?: boolean
-          created_at?: string
-          updated_at?: string
-        }
-      }
-      task_templates: {
-        Row: {
-          id: string
-          hospital_id: string | null
-          category: EmergencyCategory
-          task_sequence: number
-          role_required: TaskRole
-          title_en: string
-          title_or: string
-          instructions_en: string | null
-          instructions_or: string | null
-          created_at: string
-        }
-        Insert: {
-          id?: string
-          hospital_id?: string | null
-          category: EmergencyCategory
-          task_sequence: number
-          role_required: TaskRole
-          title_en: string
-          title_or: string
-          instructions_en?: string | null
-          instructions_or?: string | null
-          created_at?: string
-        }
-        Update: {
-          id?: string
-          hospital_id?: string | null
-          category?: EmergencyCategory
-          task_sequence?: number
-          role_required?: TaskRole
-          title_en?: string
-          title_or?: string
-          instructions_en?: string | null
-          instructions_or?: string | null
-          created_at?: string
-        }
-      }
+          id?: string;
+          playbook_id?: string;
+          team?: TeamType;
+          title?: string;
+          detail?: string | null;
+          position?: number;
+          sla_seconds?: number;
+          backup_staff?: string | null;
+        };
+      };
       alerts: {
         Row: {
-          id: string
-          alert_code: string
-          access_token: string
-          hospital_id: string
-          category: EmergencyCategory
-          status: AlertStatus
-          origin_latitude: number | null
-          origin_longitude: number | null
-          origin_area_name: string | null
-          estimated_distance_km: number | null
-          estimated_drive_minutes: number | null
-          bed_held: boolean
-          bed_held_expires_at: string | null
-          diversion_reason: RefusalReason | null
-          diversion_notes: string | null
-          diverted_to_hospital_id: string | null
-          cancellation_reason: string | null
-          created_at: string
-          acknowledged_at: string | null
-          all_tasks_claimed_at: string | null
-          arrived_at: string | null
-          closed_at: string | null
-          closed_by: string | null
-          closure_summary: string | null
-          client_request_id: string | null
-        }
+          id: string;
+          temp_id: string;
+          access_token: string;
+          facility_id: string;
+          patient_name: string | null;
+          patient_age: number | null;
+          patient_sex: string | null;
+          patient_phone: string | null;
+          flags: Json;
+          capability_req: string[];
+          playbook_key: string | null;
+          eta_minutes: number | null;
+          state: AlertState;
+          created_at: string;
+          acknowledged_at: string | null;
+          all_claimed_at: string | null;
+          arrived_at: string | null;
+          closed_at: string | null;
+          cancel_reason: string | null;
+          created_by_operator: boolean;
+          expires_at: string | null;
+          client_request_id: string | null;
+        };
         Insert: {
-          id?: string
-          alert_code?: string
-          access_token?: string
-          hospital_id: string
-          category: EmergencyCategory
-          status?: AlertStatus
-          origin_latitude?: number | null
-          origin_longitude?: number | null
-          origin_area_name?: string | null
-          estimated_distance_km?: number | null
-          estimated_drive_minutes?: number | null
-          bed_held?: boolean
-          bed_held_expires_at?: string | null
-          diversion_reason?: RefusalReason | null
-          diversion_notes?: string | null
-          diverted_to_hospital_id?: string | null
-          cancellation_reason?: string | null
-          created_at?: string
-          acknowledged_at?: string | null
-          all_tasks_claimed_at?: string | null
-          arrived_at?: string | null
-          closed_at?: string | null
-          closed_by?: string | null
-          closure_summary?: string | null
-          client_request_id?: string | null
-        }
+          id?: string;
+          temp_id: string;
+          access_token?: string;
+          facility_id: string;
+          patient_name?: string | null;
+          patient_age?: number | null;
+          patient_sex?: string | null;
+          patient_phone?: string | null;
+          flags?: Json;
+          capability_req?: string[];
+          playbook_key?: string | null;
+          eta_minutes?: number | null;
+          state?: AlertState;
+          created_at?: string;
+          acknowledged_at?: string | null;
+          all_claimed_at?: string | null;
+          arrived_at?: string | null;
+          closed_at?: string | null;
+          cancel_reason?: string | null;
+          created_by_operator?: boolean;
+          expires_at?: string | null;
+          client_request_id?: string | null;
+        };
         Update: {
-          id?: string
-          alert_code?: string
-          access_token?: string
-          hospital_id?: string
-          category?: EmergencyCategory
-          status?: AlertStatus
-          origin_latitude?: number | null
-          origin_longitude?: number | null
-          origin_area_name?: string | null
-          estimated_distance_km?: number | null
-          estimated_drive_minutes?: number | null
-          bed_held?: boolean
-          bed_held_expires_at?: string | null
-          diversion_reason?: RefusalReason | null
-          diversion_notes?: string | null
-          diverted_to_hospital_id?: string | null
-          cancellation_reason?: string | null
-          created_at?: string
-          acknowledged_at?: string | null
-          all_tasks_claimed_at?: string | null
-          arrived_at?: string | null
-          closed_at?: string | null
-          closed_by?: string | null
-          closure_summary?: string | null
-          client_request_id?: string | null
-        }
-      }
+          id?: string;
+          temp_id?: string;
+          access_token?: string;
+          facility_id?: string;
+          patient_name?: string | null;
+          patient_age?: number | null;
+          patient_sex?: string | null;
+          patient_phone?: string | null;
+          flags?: Json;
+          capability_req?: string[];
+          playbook_key?: string | null;
+          eta_minutes?: number | null;
+          state?: AlertState;
+          created_at?: string;
+          acknowledged_at?: string | null;
+          all_claimed_at?: string | null;
+          arrived_at?: string | null;
+          closed_at?: string | null;
+          cancel_reason?: string | null;
+          created_by_operator?: boolean;
+          expires_at?: string | null;
+          client_request_id?: string | null;
+        };
+      };
       alert_tasks: {
         Row: {
-          id: string
-          alert_id: string
-          task_sequence: number
-          role_required: TaskRole
-          title_en: string
-          title_or: string
-          status: TaskStatus
-          claimed_by: string | null
-          claimed_by_name: string | null
-          claimed_at: string | null
-          completed_at: string | null
-          escalation_level: EscalationLevel
-          amber_escalated_at: string | null
-          red_escalated_at: string | null
-          created_at: string
-          updated_at: string
-        }
+          id: string;
+          alert_id: string;
+          task_id: string | null;
+          team: TeamType;
+          title: string;
+          detail: string | null;
+          sla_seconds: number;
+          deadline_at: string;
+          claimed_by: string | null;
+          claimed_at: string | null;
+          done_at: string | null;
+          escalated_at: string | null;
+          escalation_n: number;
+          state: TaskState;
+          created_at: string;
+          updated_at: string;
+        };
         Insert: {
-          id?: string
-          alert_id: string
-          task_sequence: number
-          role_required: TaskRole
-          title_en: string
-          title_or: string
-          status?: TaskStatus
-          claimed_by?: string | null
-          claimed_by_name?: string | null
-          claimed_at?: string | null
-          completed_at?: string | null
-          escalation_level?: EscalationLevel
-          amber_escalated_at?: string | null
-          red_escalated_at?: string | null
-          created_at?: string
-          updated_at?: string
-        }
+          id?: string;
+          alert_id: string;
+          task_id?: string | null;
+          team: TeamType;
+          title: string;
+          detail?: string | null;
+          sla_seconds: number;
+          deadline_at: string;
+          claimed_by?: string | null;
+          claimed_at?: string | null;
+          done_at?: string | null;
+          escalated_at?: string | null;
+          escalation_n?: number;
+          state?: TaskState;
+          created_at?: string;
+          updated_at?: string;
+        };
         Update: {
-          id?: string
-          alert_id?: string
-          task_sequence?: number
-          role_required?: TaskRole
-          title_en?: string
-          title_or?: string
-          status?: TaskStatus
-          claimed_by?: string | null
-          claimed_by_name?: string | null
-          claimed_at?: string | null
-          completed_at?: string | null
-          escalation_level?: EscalationLevel
-          amber_escalated_at?: string | null
-          red_escalated_at?: string | null
-          created_at?: string
-          updated_at?: string
-        }
-      }
-      audit_logs: {
+          id?: string;
+          alert_id?: string;
+          task_id?: string | null;
+          team?: TeamType;
+          title?: string;
+          detail?: string | null;
+          sla_seconds?: number;
+          deadline_at?: string;
+          claimed_by?: string | null;
+          claimed_at?: string | null;
+          done_at?: string | null;
+          escalated_at?: string | null;
+          escalation_n?: number;
+          state?: TaskState;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      bed_holds: {
         Row: {
-          id: number
-          alert_id: string
-          action: string
-          actor_type: string
-          actor_id: string | null
-          actor_role: string | null
-          details: Json
-          created_at: string
-        }
+          id: string;
+          alert_id: string;
+          facility_id: string;
+          bed_label: string | null;
+          held_by: string | null;
+          held_at: string;
+          released_at: string | null;
+          expires_at: string;
+        };
         Insert: {
-          id?: number
-          alert_id: string
-          action: string
-          actor_type: string
-          actor_id?: string | null
-          actor_role?: string | null
-          details?: Json
-          created_at?: string
-        }
-        Update: never // Append-only constraint: Updates strictly forbidden
-      }
-    }
-    Views: {
-      v_active_alerts_escalation: {
+          id?: string;
+          alert_id: string;
+          facility_id: string;
+          bed_label?: string | null;
+          held_by?: string | null;
+          held_at?: string;
+          released_at?: string | null;
+          expires_at?: string;
+        };
+        Update: {
+          id?: string;
+          alert_id?: string;
+          facility_id?: string;
+          bed_label?: string | null;
+          held_by?: string | null;
+          held_at?: string;
+          released_at?: string | null;
+          expires_at?: string;
+        };
+      };
+      records: {
         Row: {
-          alert_id: string
-          alert_code: string
-          hospital_id: string
-          hospital_name: string
-          category: EmergencyCategory
-          alert_status: AlertStatus
-          estimated_distance_km: number | null
-          estimated_drive_minutes: number | null
-          created_at: string
-          arrived_at: string | null
-          elapsed_seconds: number
-          total_tasks: number
-          claimed_tasks_count: number
-          unclaimed_tasks_count: number
-          visual_status: 'NORMAL' | 'AMBER' | 'RED' | 'ALL_TAKEN' | 'ARRIVED' | 'CLOSED'
-          display_badge: string
-        }
-      }
-    }
+          id: string;
+          alert_id: string;
+          facility_id: string;
+          doctor_id: string | null;
+          private_notes: string | null;
+          diagnosis: string | null;
+          safe_summary: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          alert_id: string;
+          facility_id: string;
+          doctor_id?: string | null;
+          private_notes?: string | null;
+          diagnosis?: string | null;
+          safe_summary?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          alert_id?: string;
+          facility_id?: string;
+          doctor_id?: string | null;
+          private_notes?: string | null;
+          diagnosis?: string | null;
+          safe_summary?: Json;
+          created_at?: string;
+        };
+      };
+      events: {
+        Row: {
+          id: number;
+          alert_id: string;
+          actor_id: string | null;
+          actor_role: string | null;
+          action: string;
+          payload: Json;
+          at: string;
+        };
+        Insert: {
+          id?: number;
+          alert_id: string;
+          actor_id?: string | null;
+          actor_role?: string | null;
+          action: string;
+          payload?: Json;
+          at?: string;
+        };
+        Update: never;
+      };
+      cancellations: {
+        Row: {
+          id: number;
+          alert_id: string;
+          reason: string;
+          actor_role: string | null;
+          at: string;
+        };
+        Insert: {
+          id?: number;
+          alert_id: string;
+          reason: string;
+          actor_role?: string | null;
+          at?: string;
+        };
+        Update: never;
+      };
+      notification_outbox: {
+        Row: {
+          id: string;
+          alert_id: string;
+          task_id: string | null;
+          recipient_role: string;
+          channel: NotificationChannel;
+          status: NotificationStatus;
+          payload: Json;
+          created_at: string;
+          sent_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          alert_id: string;
+          task_id?: string | null;
+          recipient_role: string;
+          channel: NotificationChannel;
+          status?: NotificationStatus;
+          payload?: Json;
+          created_at?: string;
+          sent_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          alert_id?: string;
+          task_id?: string | null;
+          recipient_role?: string;
+          channel?: NotificationChannel;
+          status?: NotificationStatus;
+          payload?: Json;
+          created_at?: string;
+          sent_at?: string | null;
+        };
+      };
+    };
+    Views: {
+      nurse_safe_view: {
+        Row: {
+          alert_id: string;
+          temp_id: string;
+          bed_label: string | null;
+          current_task: string | null;
+          task_state: TaskState | null;
+          minutes_remaining: number;
+          medicines: Json | null;
+          allergies: Json | null;
+          watch_for: Json | null;
+        };
+      };
+      ops_metrics_view: {
+        Row: {
+          facility_id: string;
+          facility_name: string;
+          total_alerts_today: number;
+          successful_alerts: number;
+          cancelled_alerts: number;
+          cancellation_rate_pct: number;
+          total_escalated_tasks: number;
+          median_seconds_to_claim: number;
+        };
+      };
+      cancelled_alerts_view: {
+        Row: {
+          cancellation_id: number;
+          alert_id: string;
+          temp_id: string;
+          facility_id: string;
+          facility_name: string;
+          reason: string;
+          actor_role: string | null;
+          cancelled_at: string;
+          bed_label: string | null;
+          hold_duration_seconds: number | null;
+        };
+      };
+    };
     Functions: {
+      next_state: {
+        Args: {
+          p_alert_id: string;
+          p_action: string;
+        };
+        Returns: string;
+      };
       claim_task: {
         Args: {
-          p_task_id: string
-          p_staff_id: string
-        }
-        Returns: Json
-      }
-      evaluate_alert_escalations: {
-        Args: {
-          p_alert_id?: string
-        }
+          p_task_id: string;
+          p_staff_id: string;
+        };
+        Returns: Json;
+      };
+      escalate_overdue: {
+        Args: Record<string, never>;
         Returns: {
-          alert_id: string
-          alert_code: string
-          elapsed_seconds: number
-          unclaimed_tasks: number
-          new_escalation: string
-        }[]
-      }
-      generate_unique_alert_code: {
-        Args: Record<string, never>
-        Returns: string
-      }
-    }
-  }
+          task_id: string;
+          alert_id: string;
+          team: string;
+          title: string;
+          escalation_n: number;
+        }[];
+      };
+      cancel_alert: {
+        Args: {
+          p_alert_id: string;
+          p_reason?: string;
+        };
+        Returns: Json;
+      };
+      engine_tick: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+    };
+  };
 }
 
-// Model exports for GoldenHour
-export type Hospital = Database['public']['Tables']['hospitals']['Row']
-export type HospitalCapability = Database['public']['Tables']['hospital_capabilities']['Row']
-export type HospitalResource = Database['public']['Tables']['hospital_resources']['Row']
-export type StaffMember = Database['public']['Tables']['staff_members']['Row']
-export type TaskTemplate = Database['public']['Tables']['task_templates']['Row']
-export type Alert = Database['public']['Tables']['alerts']['Row']
-export type AlertTask = Database['public']['Tables']['alert_tasks']['Row']
-export type AuditLog = Database['public']['Tables']['audit_logs']['Row']
-export type ActiveAlertEscalation = Database['public']['Views']['v_active_alerts_escalation']['Row']
+// Domain model type exports
+export type Facility = Database['public']['Tables']['facilities']['Row'];
+export type Staff = Database['public']['Tables']['staff']['Row'];
+export type Playbook = Database['public']['Tables']['playbooks']['Row'];
+export type PlaybookTask = Database['public']['Tables']['playbook_tasks']['Row'];
+export type Alert = Database['public']['Tables']['alerts']['Row'];
+export type AlertTask = Database['public']['Tables']['alert_tasks']['Row'];
+export type BedHold = Database['public']['Tables']['bed_holds']['Row'];
+export type ClinicalRecord = Database['public']['Tables']['records']['Row'];
+export type EventLog = Database['public']['Tables']['events']['Row'];
+export type Cancellation = Database['public']['Tables']['cancellations']['Row'];
+export type NotificationOutbox = Database['public']['Tables']['notification_outbox']['Row'];
+export type NurseSafeView = Database['public']['Views']['nurse_safe_view']['Row'];
+export type OpsMetricsView = Database['public']['Views']['ops_metrics_view']['Row'];
+export type CancelledAlertsView = Database['public']['Views']['cancelled_alerts_view']['Row'];
