@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS bed_holds (
     released_at TIMESTAMPTZ,
     expires_at TIMESTAMPTZ DEFAULT timezone('utc', now()) + INTERVAL '30 minutes'
 );
-CREATE UNIQUE INDEX IF NOT EXISTS uq_active_bed_hold ON bed_holds(facility_id, bed_label) WHERE released_at IS NULL AND expires_at > timezone('utc', now());
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_bed_hold ON bed_holds(facility_id, bed_label) WHERE released_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS records (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

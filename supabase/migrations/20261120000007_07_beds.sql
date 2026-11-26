@@ -15,6 +15,6 @@ CREATE TABLE IF NOT EXISTS bed_holds (
 -- Partial unique index to prevent double-holding the same bed while active
 CREATE UNIQUE INDEX IF NOT EXISTS uq_active_bed_hold 
 ON bed_holds(facility_id, bed_label) 
-WHERE released_at IS NULL AND expires_at > timezone('utc', now());
+WHERE released_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_bed_holds_alert ON bed_holds(alert_id);
