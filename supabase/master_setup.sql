@@ -766,27 +766,27 @@ ON CONFLICT (id) DO UPDATE SET
 
 INSERT INTO staff (id, facility_id, full_name, role, team, pin_hash, is_on_shift)
 VALUES 
-    ('s0000000-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'Dr. Subrat Mohanty', 'doctor', null, crypt('1234', gen_salt('bf')), true),
-    ('s0000000-0000-0000-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'Sister Arati Jena', 'nurse', 'medicine', crypt('1234', gen_salt('bf')), true),
-    ('s0000000-0000-0000-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'Nurse Priyanka Das', 'nurse', 'equipment', crypt('1234', gen_salt('bf')), true),
-    ('s0000000-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'Ramesh Nayak', 'counter', 'counter', crypt('1234', gen_salt('bf')), true),
-    ('s0000000-0000-0000-0000-000000000005', '11111111-1111-1111-1111-111111111111', 'Bikash Sethi', 'stretcher', 'stretcher', crypt('1234', gen_salt('bf')), true),
-    ('s0000000-0000-0000-0000-000000000006', '11111111-1111-1111-1111-111111111111', 'Manas Pradhan', 'supervisor', null, crypt('1234', gen_salt('bf')), true)
+    ('a0000000-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'Dr. Subrat Mohanty', 'doctor', null, crypt('1234', gen_salt('bf')), true),
+    ('a0000000-0000-0000-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'Sister Arati Jena', 'nurse', 'medicine', crypt('1234', gen_salt('bf')), true),
+    ('a0000000-0000-0000-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'Nurse Priyanka Das', 'nurse', 'equipment', crypt('1234', gen_salt('bf')), true),
+    ('a0000000-0000-0000-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'Ramesh Nayak', 'counter', 'counter', crypt('1234', gen_salt('bf')), true),
+    ('a0000000-0000-0000-0000-000000000005', '11111111-1111-1111-1111-111111111111', 'Bikash Sethi', 'stretcher', 'stretcher', crypt('1234', gen_salt('bf')), true),
+    ('a0000000-0000-0000-0000-000000000006', '11111111-1111-1111-1111-111111111111', 'Manas Pradhan', 'supervisor', null, crypt('1234', gen_salt('bf')), true)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO playbooks (id, key, name, description)
 VALUES 
-    ('p0000000-0000-0000-0000-000000000001', 'cardiac', 'Cardiac Emergency Protocol', 'Suspected myocardial infarction or acute coronary syndrome'),
-    ('p0000000-0000-0000-0000-000000000002', 'stroke', 'Acute Stroke / CVA Protocol', 'Stroke symptoms within thrombolytic window'),
-    ('p0000000-0000-0000-0000-000000000003', 'trauma', 'Major Trauma & Hemorrhage Protocol', 'High velocity RTA, severe bleeding, or crush injury')
+    ('b0000000-0000-0000-0000-000000000001', 'cardiac', 'Cardiac Emergency Protocol', 'Suspected myocardial infarction or acute coronary syndrome'),
+    ('b0000000-0000-0000-0000-000000000002', 'stroke', 'Acute Stroke / CVA Protocol', 'Stroke symptoms within thrombolytic window'),
+    ('b0000000-0000-0000-0000-000000000003', 'trauma', 'Major Trauma & Hemorrhage Protocol', 'High velocity RTA, severe bleeding, or crush injury')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO playbook_tasks (id, playbook_id, team, title, detail, sla_seconds, backup_staff, position)
 VALUES 
-    ('pt000000-0000-0000-0000-000000000001', 'p0000000-0000-0000-0000-000000000001', 'counter', 'Hold ED intake bed', 'Reserve monitored bed in resuscitation bay', 180, 'supervisor', 1),
-    ('pt000000-0000-0000-0000-000000000002', 'p0000000-0000-0000-0000-000000000001', 'medicine', 'Prepare cardiac medications', 'Draw up Aspirin 300mg, Clopidogrel 300mg, Atorvastatin 80mg, NTG infusion', 120, 'doctor', 2),
-    ('pt000000-0000-0000-0000-000000000003', 'p0000000-0000-0000-0000-000000000001', 'equipment', 'Prepare 12-lead ECG & defibrillator', 'Ensure ECG calibrated and biphasic pads connected with O2 mask ready', 120, 'nurse', 3),
-    ('pt000000-0000-0000-0000-000000000004', 'p0000000-0000-0000-0000-000000000001', 'stretcher', 'Trolley & stretcher to gate', 'Position resuscitation stretcher with O2 cylinder at ambulance bay', 90, 'supervisor', 4)
+    ('ba000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-000000000001', 'counter', 'Hold ED intake bed', 'Reserve monitored bed in resuscitation bay', 180, 'supervisor', 1),
+    ('ba000000-0000-0000-0000-000000000002', 'b0000000-0000-0000-0000-000000000001', 'medicine', 'Prepare cardiac medications', 'Draw up Aspirin 300mg, Clopidogrel 300mg, Atorvastatin 80mg, NTG infusion', 120, 'doctor', 2),
+    ('ba000000-0000-0000-0000-000000000003', 'b0000000-0000-0000-0000-000000000001', 'equipment', 'Prepare 12-lead ECG & defibrillator', 'Ensure ECG calibrated and biphasic pads connected with O2 mask ready', 120, 'nurse', 3),
+    ('ba000000-0000-0000-0000-000000000004', 'b0000000-0000-0000-0000-000000000001', 'stretcher', 'Trolley & stretcher to gate', 'Position resuscitation stretcher with O2 cylinder at ambulance bay', 90, 'supervisor', 4)
 ON CONFLICT (id) DO NOTHING;
 
 -- -----------------------------------------------------------------------------
