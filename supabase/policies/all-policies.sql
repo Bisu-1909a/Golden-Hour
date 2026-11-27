@@ -7,13 +7,13 @@
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION auth_staff_facility_id()
 RETURNS UUID AS $$
-    SELECT facility_id FROM staff WHERE user_id = auth.uid() LIMIT 1;
-$$ LANGUAGE sql STABLE SECURITY DEFINER;
+    SELECT facility_id FROM public.staff WHERE user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
 
 CREATE OR REPLACE FUNCTION auth_staff_role()
 RETURNS TEXT AS $$
-    SELECT role::text FROM staff WHERE user_id = auth.uid() LIMIT 1;
-$$ LANGUAGE sql STABLE SECURITY DEFINER;
+    SELECT role::text FROM public.staff WHERE user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
 
 -- Enable RLS across all tables
 ALTER TABLE facilities ENABLE ROW LEVEL SECURITY;
@@ -64,7 +64,7 @@ CREATE POLICY "Staff can view active colleagues in same facility"
 ON staff FOR SELECT
 USING (
     auth.role() = 'service_role'
-    OR is_on_shift = true
+    OR (is_on_shift = true AND facility_id = auth_staff_facility_id())
 );
 
 CREATE POLICY "Staff can update own shift status"
@@ -192,7 +192,7 @@ USING (
 -- 8. EVENTS & CANCELLATIONS (Append-only audit, hospital scoped)
 -- -----------------------------------------------------------------------------
 CREATE POLICY "Allow system and authenticated event inserts"
-ON events FOR INSERT WITH CHECK (true);
+ON events FOR INSERT WITH CHECK (auth.role() = 'service_role');
 
 CREATE POLICY "Staff can view audit events for their facility only"
 ON events FOR SELECT
@@ -202,7 +202,7 @@ USING (
 );
 
 CREATE POLICY "Allow cancellation ledger inserts"
-ON cancellations FOR INSERT WITH CHECK (true);
+ON cancellations FOR INSERT WITH CHECK (auth.role() = 'service_role');
 
 CREATE POLICY "Staff can view cancellations for their facility only"
 ON cancellations FOR SELECT
@@ -211,9 +211,9 @@ USING (
     OR alert_id IN (SELECT id FROM alerts WHERE facility_id = auth_staff_facility_id())
 );
 
--- -----------------------------------------------------------------------------
--- 9. NOTIFICATION OUTBOX (Facility scoped read, service_role write/dispatch)
--- -----------------------------------------------------------------------------
+-- Column-level protection for staff authentication secrets
+REVOKE SELECT (pin_hash) ON public.staff FROM PUBLIC, anon, authenticated;
+GRANT SELECT (id, user_id, facility_id, full_name, role, team, is_on_shift, created_at) ON public.staff TO authenticated;
 CREATE POLICY "Staff can view notification outbox for their facility"
 ON notification_outbox FOR SELECT
 USING (

@@ -4,13 +4,13 @@
 -- Helper functions for RLS & authorization
 CREATE OR REPLACE FUNCTION auth_staff_facility_id()
 RETURNS UUID AS $$
-    SELECT facility_id FROM staff WHERE user_id = auth.uid() LIMIT 1;
-$$ LANGUAGE sql STABLE SECURITY DEFINER;
+    SELECT facility_id FROM public.staff WHERE user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
 
 CREATE OR REPLACE FUNCTION auth_staff_role()
 RETURNS TEXT AS $$
-    SELECT role::text FROM staff WHERE user_id = auth.uid() LIMIT 1;
-$$ LANGUAGE sql STABLE SECURITY DEFINER;
+    SELECT role::text FROM public.staff WHERE user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '';
 
 -- -----------------------------------------------------------------------------
 -- 1. NEXT_STATE: State transition validator & executor
@@ -25,10 +25,27 @@ DECLARE
     v_alert alerts%ROWTYPE;
     v_all_tasks_claimed BOOLEAN;
     v_new_state alert_state;
+    v_staff staff%ROWTYPE;
 BEGIN
-    SELECT * INTO v_alert FROM alerts WHERE id = p_alert_id;
+    SET search_path = '';
+
+    SELECT * INTO v_alert FROM public.alerts WHERE id = p_alert_id FOR UPDATE;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Alert with id % not found', p_alert_id;
+    END IF;
+
+    -- Human caller identity must come from auth.uid()
+    IF auth.uid() IS NULL THEN
+        RAISE EXCEPTION 'Authentication required';
+    END IF;
+
+    SELECT * INTO v_staff FROM public.staff WHERE user_id = auth.uid();
+    IF NOT FOUND OR v_staff.is_on_shift IS NOT TRUE THEN
+        RAISE EXCEPTION 'Staff record not found or inactive';
+    END IF;
+
+    IF v_staff.facility_id IS DISTINCT FROM v_alert.facility_id THEN
+        RAISE EXCEPTION 'Cross-facility access denied';
     END IF;
 
     -- Terminal states cannot transition
@@ -39,41 +56,44 @@ BEGIN
     IF p_action = 'ACKNOWLEDGE' THEN
         IF v_alert.state = 'SENT' THEN
             v_new_state := 'ACKNOWLEDGED';
-            UPDATE alerts SET state = v_new_state, acknowledged_at = timezone('utc', now()) WHERE id = p_alert_id;
-            INSERT INTO events (alert_id, actor_role, action, payload) VALUES (p_alert_id, 'supervisor', 'ACK', '{}'::jsonb);
+            UPDATE public.alerts SET state = v_new_state, acknowledged_at = timezone('utc', now()) WHERE id = p_alert_id;
+            INSERT INTO public.events (alert_id, actor_role, action, payload) VALUES (p_alert_id, v_staff.role, 'ACK', '{}'::jsonb);
         ELSE
             v_new_state := v_alert.state;
         END IF;
 
     ELSIF p_action = 'CHECK_CLAIM_PROGRESS' THEN
-        SELECT NOT EXISTS(SELECT 1 FROM alert_tasks WHERE alert_id = p_alert_id AND state = 'OPEN')
+        SELECT NOT EXISTS(SELECT 1 FROM public.alert_tasks WHERE alert_id = p_alert_id AND state = 'OPEN')
         INTO v_all_tasks_claimed;
 
         IF v_all_tasks_claimed THEN
             v_new_state := 'ALL_CLAIMED';
-            UPDATE alerts SET state = v_new_state, all_claimed_at = timezone('utc', now()) WHERE id = p_alert_id;
-            INSERT INTO events (alert_id, actor_role, action, payload) VALUES (p_alert_id, 'system', 'ALL_CLAIMED', '{}'::jsonb);
+            UPDATE public.alerts SET state = v_new_state, all_claimed_at = timezone('utc', now()) WHERE id = p_alert_id;
+            INSERT INTO public.events (alert_id, actor_role, action, payload) VALUES (p_alert_id, v_staff.role, 'ALL_CLAIMED', '{}'::jsonb);
         ELSE
             IF v_alert.state = 'ACKNOWLEDGED' THEN
                 v_new_state := 'CLAIMING';
-                UPDATE alerts SET state = v_new_state WHERE id = p_alert_id;
+                UPDATE public.alerts SET state = v_new_state WHERE id = p_alert_id;
             ELSE
                 v_new_state := v_alert.state;
             END IF;
         END IF;
 
     ELSIF p_action = 'ARRIVED' THEN
+        IF v_alert.state NOT IN ('ALL_CLAIMED', 'CLAIMING', 'ACKNOWLEDGED') THEN
+            RAISE EXCEPTION 'Cannot mark arrived from state %', v_alert.state;
+        END IF;
         v_new_state := 'ARRIVED';
-        UPDATE alerts SET state = v_new_state, arrived_at = timezone('utc', now()) WHERE id = p_alert_id;
-        INSERT INTO events (alert_id, actor_role, action, payload) VALUES (p_alert_id, 'counter', 'ARRIVED', '{}'::jsonb);
+        UPDATE public.alerts SET state = v_new_state, arrived_at = timezone('utc', now()) WHERE id = p_alert_id;
+        INSERT INTO public.events (alert_id, actor_role, action, payload) VALUES (p_alert_id, v_staff.role, 'ARRIVED', '{}'::jsonb);
 
     ELSIF p_action = 'CLOSE' THEN
         IF v_alert.state != 'ARRIVED' THEN
             RAISE EXCEPTION 'Cannot close alert before arrival is confirmed';
         END IF;
         v_new_state := 'CLOSED';
-        UPDATE alerts SET state = v_new_state, closed_at = timezone('utc', now()) WHERE id = p_alert_id;
-        INSERT INTO events (alert_id, actor_role, action, payload) VALUES (p_alert_id, 'doctor', 'CLOSED', '{}'::jsonb);
+        UPDATE public.alerts SET state = v_new_state, closed_at = timezone('utc', now()) WHERE id = p_alert_id;
+        INSERT INTO public.events (alert_id, actor_role, action, payload) VALUES (p_alert_id, v_staff.role, 'CLOSED', '{}'::jsonb);
 
     ELSE
         RAISE EXCEPTION 'Illegal action % for alert state %', p_action, v_alert.state;
@@ -81,7 +101,7 @@ BEGIN
 
     RETURN v_new_state::text;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
 -- -----------------------------------------------------------------------------
 -- 2. CLAIM_TASK: Atomic compare-and-set claim with verified staff identity
@@ -96,39 +116,29 @@ DECLARE
     v_staff staff%ROWTYPE;
     v_alert alerts%ROWTYPE;
 BEGIN
-    -- 1. Identity Verification: Must match authenticated user (auth.uid()) or service_role
-    IF auth.uid() IS NOT NULL THEN
-        SELECT * INTO v_staff FROM staff WHERE user_id = auth.uid();
-        IF NOT FOUND THEN
-            RETURN jsonb_build_object(
-                'success', false,
-                'error', 'Caller has no active staff record for authenticated user',
-                'code', 'STAFF_NOT_FOUND'
-            );
-        END IF;
-
-        IF p_staff_id IS NOT NULL AND v_staff.id <> p_staff_id THEN
-            RETURN jsonb_build_object(
-                'success', false,
-                'error', 'Staff identity mismatch: p_staff_id does not match authenticated user',
-                'code', 'FORBIDDEN'
-            );
-        END IF;
-    ELSIF p_staff_id IS NOT NULL THEN
-        -- Service-role or headless testing
-        SELECT * INTO v_staff FROM staff WHERE id = p_staff_id;
-        IF NOT FOUND THEN
-            RETURN jsonb_build_object(
-                'success', false,
-                'error', 'Staff member not found',
-                'code', 'STAFF_NOT_FOUND'
-            );
-        END IF;
-    ELSE
+    -- 1. Identity Verification: Must match authenticated user (auth.uid())
+    IF auth.uid() IS NULL THEN
         RETURN jsonb_build_object(
             'success', false,
             'error', 'Authentication required to claim tasks',
             'code', 'UNAUTHORIZED'
+        );
+    END IF;
+
+    SELECT * INTO v_staff FROM public.staff WHERE user_id = auth.uid();
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'Caller has no active staff record for authenticated user',
+            'code', 'STAFF_NOT_FOUND'
+        );
+    END IF;
+
+    IF p_staff_id IS NOT NULL AND v_staff.id <> p_staff_id THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'Staff identity mismatch: p_staff_id does not match authenticated user',
+            'code', 'FORBIDDEN'
         );
     END IF;
 
@@ -213,7 +223,7 @@ BEGIN
         'task', row_to_json(v_task)
     );
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- -----------------------------------------------------------------------------
 -- 3. ESCALATE_OVERDUE: Idempotent atomic escalation query
@@ -315,8 +325,15 @@ BEGIN
     IF auth.role() = 'service_role' THEN
         NULL;
     ELSIF auth.uid() IS NOT NULL THEN
-        SELECT * INTO v_staff FROM staff WHERE user_id = auth.uid();
-        IF FOUND AND v_staff.facility_id <> v_alert.facility_id THEN
+        SELECT * INTO v_staff FROM public.staff WHERE user_id = auth.uid();
+        IF NOT FOUND THEN
+            RETURN jsonb_build_object(
+                'success', false,
+                'error', 'Staff record not found for authenticated user',
+                'code', 'FORBIDDEN'
+            );
+        END IF;
+        IF v_staff.facility_id IS DISTINCT FROM v_alert.facility_id THEN
             RETURN jsonb_build_object(
                 'success', false,
                 'error', 'Staff from another facility cannot cancel this alert',
@@ -342,7 +359,7 @@ BEGIN
       AND state NOT IN ('CANCELLED', 'ARRIVED', 'CLOSED', 'EXPIRED');
 
     IF NOT FOUND THEN
-        SELECT * INTO v_alert FROM alerts WHERE id = p_alert_id;
+SELECT * INTO v_alert FROM public.alerts WHERE id = p_alert_id FOR UPDATE;
         RETURN jsonb_build_object(
             'success', false,
             'error', 'Concurrent state transition detected',
@@ -407,47 +424,55 @@ BEGIN
         'bed_released', (v_beds_released > 0)
     );
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- -----------------------------------------------------------------------------
 -- 5. ENGINE_TICK: The Heartbeat
 -- Calls escalate_overdue, expires claims, releases beds in one transaction
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION engine_tick()
-RETURNS JSONB AS $$
+RETURNS JSONB AS $
 DECLARE
     v_escalated_count INT := 0;
     v_expired_alerts_count INT := 0;
     v_released_holds_count INT := 0;
 BEGIN
+    SET search_path = public;
+
     -- 1. Escalate overdue tasks
     WITH esc AS (
         SELECT * FROM escalate_overdue()
     )
     SELECT COUNT(*) INTO v_escalated_count FROM esc;
 
-    -- 2. Expire un-arrived alerts past ETA + 5 minutes and release their bed holds
-    WITH exp_alerts AS (
-        UPDATE alerts
-        SET state = 'EXPIRED'
-        WHERE state IN ('SENT', 'ACKNOWLEDGED', 'CLAIMING', 'ALL_CLAIMED')
-          AND expires_at IS NOT NULL
-          AND expires_at < timezone('utc', now())
-        RETURNING id, facility_id
-    ),
-    logged_exp AS (
-        INSERT INTO events (alert_id, actor_role, action, payload)
-        SELECT ea.id, 'system', 'ALERT_EXPIRED', jsonb_build_object('expired_at', timezone('utc', now()))
-        FROM exp_alerts ea
-    ),
-    rel_alert_holds AS (
+    -- 2. Expire un-arrived alerts past ETA + 5 minutes
+    UPDATE alerts
+    SET state = 'EXPIRED'
+    WHERE state IN ('SENT', 'ACKNOWLEDGED', 'CLAIMING', 'ALL_CLAIMED')
+      AND expires_at IS NOT NULL
+      AND expires_at < timezone('utc', now());
+    GET DIAGNOSTICS v_expired_alerts_count = ROW_COUNT;
+
+    INSERT INTO events (alert_id, actor_role, action, payload)
+    SELECT a.id, 'system', 'ALERT_EXPIRED', jsonb_build_object('expired_at', timezone('utc', now()))
+    FROM alerts a
+    WHERE a.state = 'EXPIRED'
+      AND a.expires_at IS NOT NULL
+      AND a.expires_at < timezone('utc', now());
+
+    -- 3. Release expired-alert holds and timed-out holds without double release
+    WITH rel_alert_holds AS (
         UPDATE bed_holds bh
         SET released_at = timezone('utc', now())
-        FROM exp_alerts ea
-        WHERE bh.alert_id = ea.id AND bh.released_at IS NULL
+        WHERE bh.released_at IS NULL
+          AND bh.alert_id IN (
+              SELECT id FROM alerts
+              WHERE state = 'EXPIRED'
+                AND expires_at IS NOT NULL
+                AND expires_at < timezone('utc', now())
+          )
         RETURNING bh.facility_id
     ),
-    -- 3. Release any remaining expired bed holds (e.g. 30 min hold timeout)
     rel_timeout_holds AS (
         UPDATE bed_holds
         SET released_at = timezone('utc', now())
@@ -461,16 +486,17 @@ BEGIN
         SELECT facility_id FROM rel_timeout_holds
     ),
     agg_released AS (
-        SELECT facility_id, COUNT(*) as cnt
+        SELECT facility_id, COUNT(*) AS cnt
         FROM all_released
         GROUP BY facility_id
+    ),
+    facility_update AS (
+        UPDATE facilities f
+        SET ed_beds_free = LEAST(f.ed_beds_total, f.ed_beds_free + ar.cnt::int)
+        FROM agg_released ar
+        WHERE f.id = ar.facility_id
     )
-    UPDATE facilities f
-    SET ed_beds_free = LEAST(f.ed_beds_total, f.ed_beds_free + ar.cnt::int)
-    FROM agg_released ar
-    WHERE f.id = ar.facility_id;
-
-    GET DIAGNOSTICS v_released_holds_count = ROW_COUNT;
+    SELECT COUNT(*) INTO v_released_holds_count FROM all_released;
 
     RETURN jsonb_build_object(
         'success', true,
@@ -480,7 +506,7 @@ BEGIN
         'holds_released', v_released_holds_count
     );
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- -----------------------------------------------------------------------------
 -- 6. PRIVILEGED GRANTS & FUNCTION PERMISSIONS
@@ -492,7 +518,7 @@ REVOKE EXECUTE ON FUNCTION next_state(UUID, TEXT) FROM PUBLIC, anon;
 
 GRANT EXECUTE ON FUNCTION engine_tick() TO service_role, postgres;
 GRANT EXECUTE ON FUNCTION escalate_overdue() TO service_role, postgres;
-GRANT EXECUTE ON FUNCTION next_state(UUID, TEXT) TO authenticated, service_role, postgres;
+GRANT EXECUTE ON FUNCTION next_state(UUID, TEXT) TO authenticated, postgres;
 
 -- claim_task: authenticated staff and service_role only
 REVOKE EXECUTE ON FUNCTION claim_task(UUID, UUID) FROM PUBLIC, anon;
