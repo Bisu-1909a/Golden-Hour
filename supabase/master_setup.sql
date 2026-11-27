@@ -554,6 +554,10 @@ GRANT EXECUTE ON FUNCTION cancel_alert(UUID, TEXT, UUID) TO anon, authenticated,
 -- -----------------------------------------------------------------------------
 -- 5. SECURE VIEWS
 -- -----------------------------------------------------------------------------
+DROP VIEW IF EXISTS nurse_safe_view CASCADE;
+DROP VIEW IF EXISTS ops_metrics_view CASCADE;
+DROP VIEW IF EXISTS cancelled_alerts_view CASCADE;
+
 CREATE OR REPLACE VIEW nurse_safe_view
 WITH (security_invoker = true)
 AS
@@ -588,9 +592,11 @@ SELECT
     ) AS cancellation_rate_pct,
     COUNT(t.id) FILTER (WHERE t.escalation_n > 0) AS total_escalated_tasks,
     COALESCE(
-        PERCENTILE_CONT(0.5) WITHIN GROUP (
-            ORDER BY EXTRACT(EPOCH FROM (t.claimed_at - t.created_at))
-        ) FILTER (WHERE t.claimed_at IS NOT NULL), 0
+        ROUND(
+            PERCENTILE_CONT(0.5) WITHIN GROUP (
+                ORDER BY EXTRACT(EPOCH FROM (t.claimed_at - t.created_at))
+            ) FILTER (WHERE t.claimed_at IS NOT NULL)
+        )::int, 0
     ) AS median_seconds_to_claim
 FROM facilities f
 LEFT JOIN alerts a ON a.facility_id = f.id AND a.created_at >= CURRENT_DATE
