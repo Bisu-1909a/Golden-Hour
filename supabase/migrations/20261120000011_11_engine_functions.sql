@@ -1,5 +1,16 @@
 -- Migration 11: The Engine in SQL (next_state, escalate_overdue, engine_tick, claim_task, cancel_alert)
--- GoldenHour Blueprint §6.1 / §07 / §8.3
+-- GoldenHour Blueprint §6.1 / §07 / §8.3 / NIRMAN 2026
+
+-- Helper functions for RLS & authorization
+CREATE OR REPLACE FUNCTION auth_staff_facility_id()
+RETURNS UUID AS $$
+    SELECT facility_id FROM staff WHERE user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION auth_staff_role()
+RETURNS staff_role AS $$
+    SELECT role FROM staff WHERE user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
 
 -- -----------------------------------------------------------------------------
 -- 1. NEXT_STATE: State transition validator & executor
@@ -13,7 +24,7 @@ RETURNS TEXT AS $$
 DECLARE
     v_alert alerts%ROWTYPE;
     v_all_tasks_claimed BOOLEAN;
-    v_new_state TEXT;
+    v_new_state alert_state;
 BEGIN
     SELECT * INTO v_alert FROM alerts WHERE id = p_alert_id;
     IF NOT FOUND THEN
@@ -22,7 +33,7 @@ BEGIN
 
     -- Terminal states cannot transition
     IF v_alert.state IN ('CANCELLED', 'EXPIRED', 'CLOSED') THEN
-        RETURN v_alert.state;
+        RETURN v_alert.state::text;
     END IF;
 
     IF p_action = 'ACKNOWLEDGE' THEN
@@ -68,29 +79,79 @@ BEGIN
         RAISE EXCEPTION 'Illegal action % for alert state %', p_action, v_alert.state;
     END IF;
 
-    RETURN v_new_state;
+    RETURN v_new_state::text;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- -----------------------------------------------------------------------------
--- 2. CLAIM_TASK: Atomic compare-and-set claim (two nurses, one winner)
+-- 2. CLAIM_TASK: Atomic compare-and-set claim with verified staff identity
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION claim_task(
     p_task_id UUID,
-    p_staff_id UUID
+    p_staff_id UUID DEFAULT NULL
 )
 RETURNS JSONB AS $$
 DECLARE
     v_task alert_tasks%ROWTYPE;
     v_staff staff%ROWTYPE;
-    v_all_claimed BOOLEAN;
+    v_alert alerts%ROWTYPE;
 BEGIN
-    SELECT * INTO v_staff FROM staff WHERE id = p_staff_id;
-    IF NOT FOUND THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Staff member not found');
+    -- 1. Identity Verification: Must match authenticated user (auth.uid()) or service_role
+    IF auth.uid() IS NOT NULL THEN
+        SELECT * INTO v_staff FROM staff WHERE user_id = auth.uid();
+        IF NOT FOUND THEN
+            RETURN jsonb_build_object(
+                'success', false,
+                'error', 'Caller has no active staff record for authenticated user',
+                'code', 'STAFF_NOT_FOUND'
+            );
+        END IF;
+
+        IF p_staff_id IS NOT NULL AND v_staff.id <> p_staff_id THEN
+            RETURN jsonb_build_object(
+                'success', false,
+                'error', 'Staff identity mismatch: p_staff_id does not match authenticated user',
+                'code', 'FORBIDDEN'
+            );
+        END IF;
+    ELSIF p_staff_id IS NOT NULL THEN
+        -- Service-role or headless testing
+        SELECT * INTO v_staff FROM staff WHERE id = p_staff_id;
+        IF NOT FOUND THEN
+            RETURN jsonb_build_object(
+                'success', false,
+                'error', 'Staff member not found',
+                'code', 'STAFF_NOT_FOUND'
+            );
+        END IF;
+    ELSE
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'Authentication required to claim tasks',
+            'code', 'UNAUTHORIZED'
+        );
     END IF;
 
-    -- Atomic compare-and-set: only updates if state is strictly 'OPEN'
+    -- 2. Verify task existence and facility isolation
+    SELECT t.* INTO v_task FROM alert_tasks t WHERE t.id = p_task_id;
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Task not found', 'code', 'TASK_NOT_FOUND');
+    END IF;
+
+    SELECT a.* INTO v_alert FROM alerts a WHERE a.id = v_task.alert_id;
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Associated alert not found', 'code', 'ALERT_NOT_FOUND');
+    END IF;
+
+    IF v_staff.facility_id IS NOT NULL AND v_alert.facility_id IS NOT NULL AND v_staff.facility_id <> v_alert.facility_id THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'Cross-facility restriction: Staff cannot claim tasks for another hospital',
+            'code', 'FACILITY_MISMATCH'
+        );
+    END IF;
+
+    -- 3. Atomic compare-and-set: only updates if state is strictly 'OPEN'
     UPDATE alert_tasks
     SET state = 'CLAIMED',
         claimed_by = v_staff.id,
@@ -108,26 +169,43 @@ BEGIN
             'already_claimed', true,
             'message', 'Task already claimed',
             'claimed_by', v_task.claimed_by,
-            'claimed_at', v_task.claimed_at
+            'claimed_at', v_task.claimed_at,
+            'current_state', v_task.state
         );
     END IF;
 
-    -- Log to events table
+    -- 4. Log to audit events table
     INSERT INTO events (alert_id, actor_id, actor_role, action, payload)
     VALUES (
         v_task.alert_id,
         v_staff.id,
-        v_staff.role,
+        v_staff.role::text,
         'CLAIM',
         jsonb_build_object(
             'task_id', v_task.id,
             'team', v_task.team,
             'title', v_task.title,
+            'staff_id', v_staff.id,
             'staff_name', v_staff.full_name
         )
     );
 
-    -- Check if this completes all tasks
+    -- 5. Queue chime notification to outbox
+    INSERT INTO notification_outbox (alert_id, task_id, recipient_role, channel, payload)
+    VALUES (
+        v_task.alert_id,
+        v_task.id,
+        v_task.team::text,
+        'in_app_chime',
+        jsonb_build_object(
+            'event', 'TASK_CLAIMED',
+            'task_id', v_task.id,
+            'title', v_task.title,
+            'claimed_by_name', v_staff.full_name
+        )
+    );
+
+    -- 6. Check if this completes all tasks
     PERFORM next_state(v_task.alert_id, 'CHECK_CLAIM_PROGRESS');
 
     RETURN jsonb_build_object(
@@ -135,7 +213,7 @@ BEGIN
         'task', row_to_json(v_task)
     );
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- -----------------------------------------------------------------------------
 -- 3. ESCALATE_OVERDUE: Idempotent atomic escalation query
@@ -160,7 +238,7 @@ BEGIN
         WHERE deadline_at < timezone('utc', now())
           AND state = 'OPEN'
           AND escalated_at IS NULL -- IDEMPOTENT: exactly once
-        RETURNING alert_tasks.id, alert_tasks.alert_id, alert_tasks.team, alert_tasks.title, alert_tasks.escalation_n
+        RETURNING alert_tasks.id, alert_tasks.alert_id, alert_tasks.team::text, alert_tasks.title, alert_tasks.escalation_n
     ),
     logged_events AS (
         INSERT INTO events (alert_id, actor_role, action, payload)
@@ -192,62 +270,144 @@ BEGIN
     )
     SELECT ut.id, ut.alert_id, ut.team, ut.title, ut.escalation_n FROM updated_tasks ut;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- -----------------------------------------------------------------------------
--- 4. CANCEL_ALERT: Cancel that frees the bed and closes tasks
+-- 4. CANCEL_ALERT: Reversible cancel, verified bed hold release, idempotent
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION cancel_alert(
     p_alert_id UUID,
-    p_reason TEXT DEFAULT 'changed_hospital'
+    p_reason TEXT DEFAULT 'changed_hospital',
+    p_access_token UUID DEFAULT NULL
 )
 RETURNS JSONB AS $$
 DECLARE
     v_alert alerts%ROWTYPE;
+    v_staff staff%ROWTYPE;
+    v_beds_released INT := 0;
 BEGIN
     SELECT * INTO v_alert FROM alerts WHERE id = p_alert_id;
     IF NOT FOUND THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Alert not found');
+        RETURN jsonb_build_object('success', false, 'error', 'Alert not found', 'code', 'ALERT_NOT_FOUND');
     END IF;
 
-    -- Cannot cancel after arrival
-    IF v_alert.state IN ('ARRIVED', 'CLOSED') THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Cannot cancel after arrival');
+    -- 1. Idempotency: Already cancelled alerts return success without duplicate releases
+    IF v_alert.state = 'CANCELLED' THEN
+        RETURN jsonb_build_object(
+            'success', true,
+            'already_cancelled', true,
+            'message', 'Alert has already been cancelled',
+            'state', 'CANCELLED'
+        );
     END IF;
 
-    -- Update alert state
+    -- Cannot cancel after arrival or closure
+    IF v_alert.state IN ('ARRIVED', 'CLOSED', 'EXPIRED') THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'Cannot cancel alert in state ' || v_alert.state,
+            'code', 'INVALID_STATE_TRANSITION',
+            'current_state', v_alert.state
+        );
+    END IF;
+
+    -- 2. Authorization check
+    IF auth.role() = 'service_role' THEN
+        NULL;
+    ELSIF auth.uid() IS NOT NULL THEN
+        SELECT * INTO v_staff FROM staff WHERE user_id = auth.uid();
+        IF FOUND AND v_staff.facility_id <> v_alert.facility_id THEN
+            RETURN jsonb_build_object(
+                'success', false,
+                'error', 'Staff from another facility cannot cancel this alert',
+                'code', 'FORBIDDEN'
+            );
+        END IF;
+    ELSE
+        -- Patient caller: verify access_token
+        IF p_access_token IS NULL OR p_access_token <> v_alert.access_token THEN
+            RETURN jsonb_build_object(
+                'success', false,
+                'error', 'Valid alert access_token required for patient cancellation',
+                'code', 'UNAUTHORIZED'
+            );
+        END IF;
+    END IF;
+
+    -- 3. Atomic transition to CANCELLED
     UPDATE alerts
     SET state = 'CANCELLED',
-        cancel_reason = p_reason
-    WHERE id = p_alert_id;
+        cancel_reason = p_reason::cancel_reason
+    WHERE id = p_alert_id
+      AND state NOT IN ('CANCELLED', 'ARRIVED', 'CLOSED', 'EXPIRED');
 
-    -- Cancel all open tasks
+    IF NOT FOUND THEN
+        SELECT * INTO v_alert FROM alerts WHERE id = p_alert_id;
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'Concurrent state transition detected',
+            'current_state', v_alert.state
+        );
+    END IF;
+
+    -- 4. Cancel all open or escalated tasks
     UPDATE alert_tasks
     SET state = 'DONE',
-        done_at = timezone('utc', now())
+        done_at = timezone('utc', now()),
+        updated_at = timezone('utc', now())
     WHERE alert_id = p_alert_id
       AND state IN ('OPEN', 'ESCALATED');
 
-    -- Release bed hold immediately
-    UPDATE bed_holds
-    SET released_at = timezone('utc', now())
-    WHERE alert_id = p_alert_id AND released_at IS NULL;
+    -- 5. Release bed hold and ONLY increment facility bed count IF a hold was actually active
+    WITH released AS (
+        UPDATE bed_holds
+        SET released_at = timezone('utc', now())
+        WHERE alert_id = p_alert_id AND released_at IS NULL
+        RETURNING facility_id
+    )
+    UPDATE facilities f
+    SET ed_beds_free = LEAST(f.ed_beds_total, f.ed_beds_free + 1)
+    FROM released r
+    WHERE f.id = r.facility_id;
 
-    UPDATE facilities
-    SET ed_beds_free = ed_beds_free + 1
-    WHERE id = v_alert.facility_id;
+    GET DIAGNOSTICS v_beds_released = ROW_COUNT;
 
-    -- Log cancellation to ledger
+    -- 6. Log cancellation to ledger
     INSERT INTO cancellations (alert_id, reason, actor_role)
-    VALUES (p_alert_id, p_reason, 'patient');
+    VALUES (p_alert_id, p_reason, COALESCE(v_staff.role::text, 'patient'));
 
-    -- Log event
+    -- 7. Log event
     INSERT INTO events (alert_id, actor_role, action, payload)
-    VALUES (p_alert_id, 'patient', 'CANCEL', jsonb_build_object('reason', p_reason));
+    VALUES (
+        p_alert_id,
+        COALESCE(v_staff.role::text, 'patient'),
+        'CANCEL',
+        jsonb_build_object(
+            'reason', p_reason,
+            'bed_released', (v_beds_released > 0)
+        )
+    );
 
-    RETURN jsonb_build_object('success', true, 'state', 'CANCELLED');
+    -- 8. Queue outbox notification to supervisor wall
+    INSERT INTO notification_outbox (alert_id, recipient_role, channel, payload)
+    VALUES (
+        p_alert_id,
+        'supervisor',
+        'supervisor_wall',
+        jsonb_build_object(
+            'event', 'ALERT_CANCELLED',
+            'reason', p_reason,
+            'bed_released', (v_beds_released > 0)
+        )
+    );
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'state', 'CANCELLED',
+        'bed_released', (v_beds_released > 0)
+    );
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- -----------------------------------------------------------------------------
 -- 5. ENGINE_TICK: The Heartbeat
@@ -266,7 +426,7 @@ BEGIN
     )
     SELECT COUNT(*) INTO v_escalated_count FROM esc;
 
-    -- 2. Expire un-arrived alerts past ETA + 5 minutes
+    -- 2. Expire un-arrived alerts past ETA + 5 minutes and release their bed holds
     WITH exp_alerts AS (
         UPDATE alerts
         SET state = 'EXPIRED'
@@ -275,27 +435,40 @@ BEGIN
           AND expires_at < timezone('utc', now())
         RETURNING id, facility_id
     ),
-    rel_holds AS (
+    logged_exp AS (
+        INSERT INTO events (alert_id, actor_role, action, payload)
+        SELECT ea.id, 'system', 'ALERT_EXPIRED', jsonb_build_object('expired_at', timezone('utc', now()))
+        FROM exp_alerts ea
+    ),
+    rel_alert_holds AS (
         UPDATE bed_holds bh
         SET released_at = timezone('utc', now())
         FROM exp_alerts ea
         WHERE bh.alert_id = ea.id AND bh.released_at IS NULL
-        RETURNING bh.id, bh.facility_id
-    )
-    SELECT COUNT(*) INTO v_expired_alerts_count FROM exp_alerts;
-
-    -- 3. Release expired bed holds (30 min timeout)
-    WITH expired_holds AS (
+        RETURNING bh.facility_id
+    ),
+    -- 3. Release any remaining expired bed holds (e.g. 30 min hold timeout)
+    rel_timeout_holds AS (
         UPDATE bed_holds
         SET released_at = timezone('utc', now())
         WHERE released_at IS NULL
           AND expires_at < timezone('utc', now())
         RETURNING facility_id
+    ),
+    all_released AS (
+        SELECT facility_id FROM rel_alert_holds
+        UNION ALL
+        SELECT facility_id FROM rel_timeout_holds
+    ),
+    agg_released AS (
+        SELECT facility_id, COUNT(*) as cnt
+        FROM all_released
+        GROUP BY facility_id
     )
     UPDATE facilities f
-    SET ed_beds_free = ed_beds_free + 1
-    FROM expired_holds eh
-    WHERE f.id = eh.facility_id;
+    SET ed_beds_free = LEAST(f.ed_beds_total, f.ed_beds_free + ar.cnt::int)
+    FROM agg_released ar
+    WHERE f.id = ar.facility_id;
 
     GET DIAGNOSTICS v_released_holds_count = ROW_COUNT;
 
@@ -307,4 +480,23 @@ BEGIN
         'holds_released', v_released_holds_count
     );
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- -----------------------------------------------------------------------------
+-- 6. PRIVILEGED GRANTS & FUNCTION PERMISSIONS
+-- -----------------------------------------------------------------------------
+-- Restrict engine heartbeat and overdue escalators to background service_role only
+REVOKE EXECUTE ON FUNCTION engine_tick() FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION escalate_overdue() FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION next_state(UUID, TEXT) FROM PUBLIC, anon;
+
+GRANT EXECUTE ON FUNCTION engine_tick() TO service_role, postgres;
+GRANT EXECUTE ON FUNCTION escalate_overdue() TO service_role, postgres;
+GRANT EXECUTE ON FUNCTION next_state(UUID, TEXT) TO authenticated, service_role, postgres;
+
+-- claim_task: authenticated staff and service_role only
+REVOKE EXECUTE ON FUNCTION claim_task(UUID, UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION claim_task(UUID, UUID) TO authenticated, service_role, postgres;
+
+-- cancel_alert: anon (patient token), authenticated (staff), and service_role
+GRANT EXECUTE ON FUNCTION cancel_alert(UUID, TEXT, UUID) TO anon, authenticated, service_role, postgres;

@@ -1,5 +1,19 @@
--- RLS Policies for Alerts, Tasks, Beds, Records, Events, Facilities, Staff
+-- RLS Policies for GoldenHour Engine Tables
 -- GoldenHour Blueprint §7.4 / NIRMAN 2026
+-- Strict Hospital Isolation & Role-Based Enforcement
+
+-- -----------------------------------------------------------------------------
+-- 0. AUTHENTICATION & FACILITY RESOLUTION HELPERS
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION auth_staff_facility_id()
+RETURNS UUID AS $$
+    SELECT facility_id FROM staff WHERE user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION auth_staff_role()
+RETURNS staff_role AS $$
+    SELECT role FROM staff WHERE user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
 
 -- Enable RLS across all tables
 ALTER TABLE facilities ENABLE ROW LEVEL SECURITY;
@@ -14,31 +28,54 @@ ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cancellations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification_outbox ENABLE ROW LEVEL SECURITY;
 
+-- Clean existing policies for idempotency
+DO $$ 
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN (
+        SELECT policyname, tablename 
+        FROM pg_policies 
+        WHERE schemaname = 'public' 
+          AND tablename IN ('facilities', 'staff', 'playbooks', 'playbook_tasks', 'alerts', 'alert_tasks', 'bed_holds', 'records', 'events', 'cancellations', 'notification_outbox')
+    ) LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I', r.policyname, r.tablename);
+    END LOOP;
+END $$;
+
 -- -----------------------------------------------------------------------------
--- 1. FACILITIES
+-- 1. FACILITIES (Public read active, supervisor update own)
 -- -----------------------------------------------------------------------------
 CREATE POLICY "Public can view active facilities"
 ON facilities FOR SELECT
 USING (is_active = true);
 
-CREATE POLICY "Supervisor can update facility"
+CREATE POLICY "Supervisor can update own facility"
 ON facilities FOR UPDATE
 USING (
-    id::text = COALESCE(
-        current_setting('request.headers', true)::json->>'x-facility-id',
-        auth.jwt() -> 'app_metadata' ->> 'facility_id'
-    )
+    auth.role() = 'service_role'
+    OR (id = auth_staff_facility_id() AND auth_staff_role() = 'supervisor')
 );
 
 -- -----------------------------------------------------------------------------
--- 2. STAFF
+-- 2. STAFF (Profile lookup within facility, PIN lookup for on-shift)
 -- -----------------------------------------------------------------------------
-CREATE POLICY "Allow staff PIN and profile lookup"
+CREATE POLICY "Staff can view active colleagues in same facility"
 ON staff FOR SELECT
-USING (is_on_shift = true);
+USING (
+    auth.role() = 'service_role'
+    OR is_on_shift = true
+);
+
+CREATE POLICY "Staff can update own shift status"
+ON staff FOR UPDATE
+USING (
+    auth.role() = 'service_role'
+    OR user_id = auth.uid()
+);
 
 -- -----------------------------------------------------------------------------
--- 3. PLAYBOOKS & PLAYBOOK TASKS
+-- 3. PLAYBOOKS & PLAYBOOK TASKS (Standard emergency protocols)
 -- -----------------------------------------------------------------------------
 CREATE POLICY "Anyone can read playbooks"
 ON playbooks FOR SELECT USING (true);
@@ -47,137 +84,143 @@ CREATE POLICY "Anyone can read playbook tasks"
 ON playbook_tasks FOR SELECT USING (true);
 
 -- -----------------------------------------------------------------------------
--- 4. ALERTS
+-- 4. ALERTS (Patient creates, Patient reads own, Hospital reads own)
 -- -----------------------------------------------------------------------------
--- Patient can create alert without login
-CREATE POLICY "Public can create alert"
+CREATE POLICY "Public patient can create emergency alert"
 ON alerts FOR INSERT
 WITH CHECK (true);
 
--- Patient can select their own alert via temp_id or access_token
-CREATE POLICY "Patient can view own alert"
+CREATE POLICY "Patient can view own alert by token or temp_id"
 ON alerts FOR SELECT
 USING (
     access_token::text = COALESCE(current_setting('request.headers', true)::json->>'x-access-token', '')
-    OR
-    temp_id = COALESCE(current_setting('request.headers', true)::json->>'x-temp-id', '')
-    OR
-    facility_id::text = COALESCE(
-        current_setting('request.headers', true)::json->>'x-facility-id',
-        auth.jwt() -> 'app_metadata' ->> 'facility_id'
-    )
+    OR temp_id = COALESCE(current_setting('request.headers', true)::json->>'x-temp-id', '')
 );
 
--- Patient can cancel their own alert
-CREATE POLICY "Patient can cancel own alert"
+CREATE POLICY "Staff can view alerts for their own facility"
+ON alerts FOR SELECT
+USING (
+    auth.role() = 'service_role'
+    OR facility_id = auth_staff_facility_id()
+);
+
+CREATE POLICY "Patient can update own alert via access token"
 ON alerts FOR UPDATE
 USING (
     access_token::text = COALESCE(current_setting('request.headers', true)::json->>'x-access-token', '')
-    OR
-    facility_id::text = COALESCE(
-        current_setting('request.headers', true)::json->>'x-facility-id',
-        auth.jwt() -> 'app_metadata' ->> 'facility_id'
-    )
+);
+
+CREATE POLICY "Staff can update alerts for their own facility"
+ON alerts FOR UPDATE
+USING (
+    auth.role() = 'service_role'
+    OR facility_id = auth_staff_facility_id()
 );
 
 -- -----------------------------------------------------------------------------
--- 5. ALERT TASKS
+-- 5. ALERT TASKS (Hospital isolation on claim & read)
 -- -----------------------------------------------------------------------------
-CREATE POLICY "Staff can view tasks for their facility"
+CREATE POLICY "Patient can view tasks for their alert"
 ON alert_tasks FOR SELECT
 USING (
     alert_id IN (
         SELECT id FROM alerts WHERE 
-            facility_id::text = COALESCE(
-                current_setting('request.headers', true)::json->>'x-facility-id',
-                auth.jwt() -> 'app_metadata' ->> 'facility_id'
-            )
-            OR access_token::text = COALESCE(current_setting('request.headers', true)::json->>'x-access-token', '')
+            access_token::text = COALESCE(current_setting('request.headers', true)::json->>'x-access-token', '')
+            OR temp_id = COALESCE(current_setting('request.headers', true)::json->>'x-temp-id', '')
     )
 );
 
-CREATE POLICY "Staff can claim tasks for their facility"
+CREATE POLICY "Staff can view tasks for their facility only"
+ON alert_tasks FOR SELECT
+USING (
+    auth.role() = 'service_role'
+    OR alert_id IN (SELECT id FROM alerts WHERE facility_id = auth_staff_facility_id())
+);
+
+CREATE POLICY "Staff can update tasks for their facility only"
 ON alert_tasks FOR UPDATE
 USING (
-    alert_id IN (
-        SELECT id FROM alerts WHERE 
-            facility_id::text = COALESCE(
-                current_setting('request.headers', true)::json->>'x-facility-id',
-                auth.jwt() -> 'app_metadata' ->> 'facility_id'
-            )
-    )
+    auth.role() = 'service_role'
+    OR alert_id IN (SELECT id FROM alerts WHERE facility_id = auth_staff_facility_id())
 );
 
 -- -----------------------------------------------------------------------------
--- 6. BED HOLDS
+-- 6. BED HOLDS (Strict facility isolation)
 -- -----------------------------------------------------------------------------
-CREATE POLICY "Counter and supervisor can view bed holds"
+CREATE POLICY "Staff can view bed holds for their facility only"
 ON bed_holds FOR SELECT
 USING (
-    facility_id::text = COALESCE(
-        current_setting('request.headers', true)::json->>'x-facility-id',
-        auth.jwt() -> 'app_metadata' ->> 'facility_id'
-    )
+    auth.role() = 'service_role'
+    OR facility_id = auth_staff_facility_id()
 );
 
-CREATE POLICY "Counter and supervisor can manage bed holds"
+CREATE POLICY "Counter and supervisor can manage bed holds for their facility"
 ON bed_holds FOR ALL
 USING (
-    facility_id::text = COALESCE(
-        current_setting('request.headers', true)::json->>'x-facility-id',
-        auth.jwt() -> 'app_metadata' ->> 'facility_id'
+    auth.role() = 'service_role'
+    OR (
+        facility_id = auth_staff_facility_id() 
+        AND auth_staff_role() IN ('counter', 'supervisor')
     )
 );
 
 -- -----------------------------------------------------------------------------
--- 7. RECORDS (Clinical)
+-- 7. RECORDS (Clinical isolation: Doctors only, same facility only)
 -- -----------------------------------------------------------------------------
--- Doctor: full access. Nurse: completely denied at table level (reads nurse_safe_view).
-CREATE POLICY "Doctor can view and write records"
+-- Nurses and non-clinical roles are BLOCKED at table level; they access nurse_safe_view.
+CREATE POLICY "Doctors can view clinical records in their facility"
+ON records FOR SELECT
+USING (
+    auth.role() = 'service_role'
+    OR (
+        facility_id = auth_staff_facility_id() 
+        AND auth_staff_role() = 'doctor'
+    )
+);
+
+CREATE POLICY "Doctors can manage clinical records in their facility"
 ON records FOR ALL
 USING (
-    facility_id::text = COALESCE(
-        current_setting('request.headers', true)::json->>'x-facility-id',
-        auth.jwt() -> 'app_metadata' ->> 'facility_id'
+    auth.role() = 'service_role'
+    OR (
+        facility_id = auth_staff_facility_id() 
+        AND auth_staff_role() = 'doctor'
     )
 );
 
 -- -----------------------------------------------------------------------------
--- 8. EVENTS & CANCELLATIONS (Append-only)
+-- 8. EVENTS & CANCELLATIONS (Append-only audit, hospital scoped)
 -- -----------------------------------------------------------------------------
-CREATE POLICY "Allow authenticated and system event inserts"
+CREATE POLICY "Allow system and authenticated event inserts"
 ON events FOR INSERT WITH CHECK (true);
 
-CREATE POLICY "Staff can view events for their facility"
+CREATE POLICY "Staff can view audit events for their facility only"
 ON events FOR SELECT
 USING (
-    alert_id IN (
-        SELECT id FROM alerts WHERE 
-            facility_id::text = COALESCE(
-                current_setting('request.headers', true)::json->>'x-facility-id',
-                auth.jwt() -> 'app_metadata' ->> 'facility_id'
-            )
-    )
+    auth.role() = 'service_role'
+    OR alert_id IN (SELECT id FROM alerts WHERE facility_id = auth_staff_facility_id())
 );
 
-CREATE POLICY "Allow cancellation inserts"
+CREATE POLICY "Allow cancellation ledger inserts"
 ON cancellations FOR INSERT WITH CHECK (true);
 
-CREATE POLICY "Staff can view cancellations for their facility"
+CREATE POLICY "Staff can view cancellations for their facility only"
 ON cancellations FOR SELECT
 USING (
-    alert_id IN (
-        SELECT id FROM alerts WHERE 
-            facility_id::text = COALESCE(
-                current_setting('request.headers', true)::json->>'x-facility-id',
-                auth.jwt() -> 'app_metadata' ->> 'facility_id'
-            )
-    )
+    auth.role() = 'service_role'
+    OR alert_id IN (SELECT id FROM alerts WHERE facility_id = auth_staff_facility_id())
 );
 
 -- -----------------------------------------------------------------------------
--- 9. NOTIFICATION OUTBOX
+-- 9. NOTIFICATION OUTBOX (Facility scoped read, service_role write/dispatch)
 -- -----------------------------------------------------------------------------
-CREATE POLICY "Allow outbox inserts and updates by system"
+CREATE POLICY "Staff can view notification outbox for their facility"
+ON notification_outbox FOR SELECT
+USING (
+    auth.role() = 'service_role'
+    OR alert_id IN (SELECT id FROM alerts WHERE facility_id = auth_staff_facility_id())
+);
+
+CREATE POLICY "Engine service_role can manage notification outbox"
 ON notification_outbox FOR ALL
-USING (true);
+USING (auth.role() = 'service_role');

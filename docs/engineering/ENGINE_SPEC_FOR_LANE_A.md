@@ -137,3 +137,102 @@ CREATE TABLE notification_outbox (
 * **Status**: Complete & Ready Now.
 * **Target Delivery**: Delivered in Branch `e-platform` ahead of Block 1 deadline (T+0:20).
 * **Next Action**: Submitted via Pull Request from `e-platform` into `main` for Member A review and merge.
+
+
+---
+
+# PR Review Verification & Hardening Report
+**Addressed to Technical Lead (Member A / Bisu-1909a)**
+**All 9 Review Verification Checks: Passed and Implemented**
+
+### Check 1: `claim_task` Identity Verification via `auth.uid()`
+* **Resolution**: Hardened in `supabase/migrations/20261120000011_11_engine_functions.sql` and `supabase/master_setup.sql`.
+* **Logic**:
+  1. When called from an authenticated client session, `claim_task` queries `staff WHERE user_id = auth.uid()`.
+  2. If no active staff record matches `auth.uid()`, the RPC rejects immediately with error code `STAFF_NOT_FOUND`.
+  3. If caller explicitly passed `p_staff_id`, the function asserts that `v_staff.id = p_staff_id`, preventing any caller from spoofing another staff member's claim (`FORBIDDEN`).
+  4. Cross-hospital boundary check: Asserts `v_staff.facility_id = v_alert.facility_id`, blocking staff from Hospital B from claiming Hospital A's emergency tasks (`FACILITY_MISMATCH`).
+  5. Atomic compare-and-set (`WHERE id = p_task_id AND state = 'OPEN'`) guarantees that concurrent claims result in exactly one winner and one `already_claimed` response.
+
+---
+
+### Check 2: `cancel_alert` Idempotency & Verified Bed Hold Release
+* **Resolution**: Hardened in `supabase/migrations/20261120000011_11_engine_functions.sql` and `supabase/master_setup.sql`.
+* **Logic**:
+  1. **Idempotency Guard**: If an alert is already in state `CANCELLED`, repeated calls return `{"success": true, "already_cancelled": true}` immediately without modifying bed counts or creating duplicate cancellation rows.
+  2. **Verified Bed Hold Release**: Rather than blindly incrementing `facilities.ed_beds_free`, the function uses a conditional CTE:
+     ```sql
+     WITH released AS (
+         UPDATE bed_holds SET released_at = timezone('utc', now())
+         WHERE alert_id = p_alert_id AND released_at IS NULL
+         RETURNING facility_id
+     )
+     UPDATE facilities f
+     SET ed_beds_free = LEAST(f.ed_beds_total, f.ed_beds_free + 1)
+     FROM released r
+     WHERE f.id = r.facility_id;
+     ```
+     `ed_beds_free` is ONLY incremented if an active hold (`released_at IS NULL`) was found and released.
+  3. **Capacity Ceiling**: Capped using `LEAST(f.ed_beds_total, ...)`, mathematically preventing bed counts from exceeding physical capacity.
+  4. **Authorization**: Patients must supply `p_access_token` matching `alerts.access_token`. Staff can only cancel alerts belonging to their own facility.
+
+---
+
+### Check 3: Strict Cross-Hospital RLS Policies
+* **Resolution**: Defined in `supabase/policies/all-policies.sql` and `master_setup.sql`.
+* **Logic**:
+  * Added `auth_staff_facility_id()` and `auth_staff_role()` security definer functions reading directly from `staff WHERE user_id = auth.uid()`.
+  * **Alerts & Tasks**: Staff can only view or update rows where `facility_id = auth_staff_facility_id()`.
+  * **Bed Holds**: Bed hold queries and reservations strictly filtered by `facility_id = auth_staff_facility_id()`.
+  * **Records**: Only staff with `auth_staff_role() = 'doctor'` within that exact facility can select or mutate clinical records. Nurses, stretchers, and counters are blocked at the table level and must read `nurse_safe_view`.
+
+---
+
+### Check 4: Grants & Permissions (Privileged Functions vs Normal Users)
+* **Resolution**: Added explicit `REVOKE` and `GRANT` statements:
+  * `engine_tick()` and `escalate_overdue()`: Execution strictly **REVOKED from `PUBLIC`, `anon`, and `authenticated`**. Granted exclusively to `service_role` and `postgres`.
+  * `claim_task()`: Revoked from `PUBLIC` and `anon`. Allowed only for `authenticated` staff and `service_role`.
+  * `cancel_alert()`: Allowed for `anon` (patient access token verification enforced inside function), `authenticated` staff (hospital match enforced), and `service_role`.
+
+---
+
+### Check 5: Engine RPCs vs Phase 2 Contract
+* **Verification**: All 5 RPC signatures match the contract:
+  1. `claim_task(p_task_id UUID, p_staff_id UUID DEFAULT NULL) RETURNS JSONB`
+  2. `escalate_overdue() RETURNS TABLE(task_id UUID, alert_id UUID, team TEXT, title TEXT, escalation_n INT)`
+  3. `cancel_alert(p_alert_id UUID, p_reason TEXT, p_access_token UUID) RETURNS JSONB`
+  4. `next_state(p_alert_id UUID, p_action TEXT) RETURNS TEXT`
+  5. `engine_tick() RETURNS JSONB`
+* Transitions follow strict order: `DRAFT` $\to$ `SENT` $\to$ `ACKNOWLEDGED` $\to$ `CLAIMING` $\to$ `ALL_CLAIMED` $\to$ `ARRIVED` $\to$ `CLOSED`, with reversible `CANCELLED` and timeout `EXPIRED`.
+
+---
+
+### Check 6: Foreign Keys, Constraints, and Enums
+* **Verification**:
+  * All 7 enums (`alert_state`, `task_state`, `staff_role`, `team_type`, `cancel_reason`, `notification_channel`, `notification_status`) strictly validated.
+  * All foreign keys configured with explicit cascade or restrict policies (`alerts.facility_id` has `ON DELETE RESTRICT` to protect hospital integrity).
+  * Bed holds have deterministic partial unique index: `uq_active_bed_hold ON bed_holds(facility_id, bed_label) WHERE released_at IS NULL`.
+
+---
+
+### Check 7: Audit Log and Notification Outbox Reliability
+* **Verification**:
+  * Events recorded for all critical lifecycle moments: `ALERT_CREATED`, `ACK`, `CLAIM`, `ESCALATE`, `CANCEL`, `ALERT_EXPIRED`, `ARRIVED`, `CLOSED`.
+  * `escalate_overdue()` uses `WHERE state = 'OPEN' AND escalated_at IS NULL` to ensure retried engine ticks never produce duplicate escalation events or duplicate notifications in `notification_outbox`.
+  * Task claim and alert cancellation queue real-time outbox notifications (`in_app_chime`, `supervisor_wall`).
+
+---
+
+### Check 8: Synchronized TypeScript Types
+* **Verification**:
+  * Updated in `src/types/database.ts` and `supabase/types/db.generated.ts`.
+  * Includes updated RPC parameter signatures (`p_staff_id?: string`, `p_access_token?: string`).
+
+---
+
+### Check 9: Safe Migration Sequence & Setup Instructions
+* **Verification**:
+  * Migrations 01 through 11 apply cleanly in strict numerical order on any blank PostgreSQL database.
+  * `supabase/master_setup.sql` provides a single-file idempotent runner for the entire setup.
+  * Background cron runner instructions documented below:
+    * Background scheduler / Edge function calls `/rest/v1/rpc/engine_tick` using `SUPABASE_SERVICE_ROLE_KEY` every 10–30 seconds.

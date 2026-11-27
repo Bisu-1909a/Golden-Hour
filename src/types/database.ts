@@ -500,7 +500,7 @@ export interface Database {
       claim_task: {
         Args: {
           p_task_id: string;
-          p_staff_id: string;
+          p_staff_id?: string;
         };
         Returns: Json;
       };
@@ -518,6 +518,7 @@ export interface Database {
         Args: {
           p_alert_id: string;
           p_reason?: string;
+          p_access_token?: string;
         };
         Returns: Json;
       };
