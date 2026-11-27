@@ -8,8 +8,8 @@ RETURNS UUID AS $$
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
 CREATE OR REPLACE FUNCTION auth_staff_role()
-RETURNS staff_role AS $$
-    SELECT role FROM staff WHERE user_id = auth.uid() LIMIT 1;
+RETURNS TEXT AS $$
+    SELECT role::text FROM staff WHERE user_id = auth.uid() LIMIT 1;
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
 -- -----------------------------------------------------------------------------
