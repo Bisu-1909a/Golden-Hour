@@ -6,18 +6,24 @@ CREATE OR REPLACE VIEW ops_metrics_view AS
 SELECT 
     f.id AS facility_id,
     f.name AS facility_name,
-    COUNT(a.id) AS total_alerts_today,
-    COUNT(CASE WHEN a.state = 'ALL_CLAIMED' OR a.state = 'ARRIVED' OR a.state = 'CLOSED' THEN 1 END) AS successful_alerts,
-    COUNT(CASE WHEN a.state = 'CANCELLED' THEN 1 END) AS cancelled_alerts,
+    COUNT(DISTINCT a.id) AS total_alerts_today,
+    COUNT(DISTINCT CASE WHEN a.state IN ('ALL_CLAIMED', 'ARRIVED', 'CLOSED') THEN a.id END) AS successful_alerts,
+    COUNT(DISTINCT CASE WHEN a.state = 'CANCELLED' THEN a.id END) AS cancelled_alerts,
     ROUND(
-        COUNT(CASE WHEN a.state = 'CANCELLED' THEN 1 END)::NUMERIC / 
-        GREATEST(1, COUNT(a.id)) * 100, 
+        COUNT(DISTINCT CASE WHEN a.state = 'CANCELLED' THEN a.id END)::NUMERIC / 
+        GREATEST(1, COUNT(DISTINCT a.id)) * 100, 
         1
     ) AS cancellation_rate_pct,
-    COUNT(CASE WHEN at.escalated_at IS NOT NULL THEN 1 END) AS total_escalated_tasks,
-    -- Median time-to-first-claim in seconds
+    COUNT(DISTINCT CASE WHEN at.escalated_at IS NOT NULL THEN at.id END) AS total_escalated_tasks,
     COALESCE(
-        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (at.claimed_at - a.created_at))),
+        (
+            SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (t.claimed_at - a.created_at)))
+            FROM alerts a
+            JOIN alert_tasks t ON t.alert_id = a.id
+            WHERE a.facility_id = f.id
+              AND a.created_at >= timezone('utc', now() - INTERVAL '24 hours')
+              AND t.claimed_at IS NOT NULL
+        ),
         45
     )::INT AS median_seconds_to_claim
 FROM facilities f
