@@ -779,15 +779,15 @@ VALUES
     ('b0000000-0000-0000-0000-000000000001', 'cardiac', 'Cardiac Emergency Protocol', 1),
     ('b0000000-0000-0000-0000-000000000002', 'stroke', 'Acute Stroke / CVA Protocol', 1),
     ('b0000000-0000-0000-0000-000000000003', 'trauma', 'Major Trauma & Hemorrhage Protocol', 1)
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (key) DO NOTHING;
 
-INSERT INTO playbook_tasks (id, playbook_id, team, title, detail, sla_seconds, backup_staff, position)
+INSERT INTO playbook_tasks (playbook_id, team, title, detail, sla_seconds, backup_staff, position)
 VALUES 
-    ('ba000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-000000000001', 'counter', 'Hold ED intake bed', 'Reserve monitored bed in resuscitation bay', 180, null, 1),
-    ('ba000000-0000-0000-0000-000000000002', 'b0000000-0000-0000-0000-000000000001', 'medicine', 'Prepare cardiac medications', 'Draw up Aspirin 300mg, Clopidogrel 300mg, Atorvastatin 80mg, NTG infusion', 120, null, 2),
-    ('ba000000-0000-0000-0000-000000000003', 'b0000000-0000-0000-0000-000000000001', 'equipment', 'Prepare 12-lead ECG & defibrillator', 'Ensure ECG calibrated and biphasic pads connected with O2 mask ready', 120, null, 3),
-    ('ba000000-0000-0000-0000-000000000004', 'b0000000-0000-0000-0000-000000000001', 'stretcher', 'Trolley & stretcher to gate', 'Position resuscitation stretcher with O2 cylinder at ambulance bay', 90, null, 4)
-ON CONFLICT (id) DO NOTHING;
+    ('b0000000-0000-0000-0000-000000000001', 'counter', 'Hold ED intake bed', 'Reserve monitored bed in resuscitation bay', 180, null, 1),
+    ('b0000000-0000-0000-0000-000000000001', 'medicine', 'Prepare cardiac medications', 'Draw up Aspirin 300mg, Clopidogrel 300mg, Atorvastatin 80mg, NTG infusion', 120, null, 2),
+    ('b0000000-0000-0000-0000-000000000001', 'equipment', 'Prepare 12-lead ECG & defibrillator', 'Ensure ECG calibrated and biphasic pads connected with O2 mask ready', 120, null, 3),
+    ('b0000000-0000-0000-0000-000000000001', 'stretcher', 'Trolley & stretcher to gate', 'Position resuscitation stretcher with O2 cylinder at ambulance bay', 90, null, 4)
+ON CONFLICT (playbook_id, position) DO NOTHING;
 
 -- -----------------------------------------------------------------------------
 -- 8. REALTIME REPLICATION PUBLICATION
