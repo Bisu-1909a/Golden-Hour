@@ -492,6 +492,20 @@ export interface Database {
     Functions: {
       next_state: {
         Args: {
+          p_task_id: string;
+          p_action: string;
+        };
+        Returns: string;
+      };
+      next_task_state: {
+        Args: {
+          p_task_id: string;
+          p_action: string;
+        };
+        Returns: Json;
+      };
+      next_alert_state: {
+        Args: {
           p_alert_id: string;
           p_action: string;
         };
@@ -500,12 +514,13 @@ export interface Database {
       claim_task: {
         Args: {
           p_task_id: string;
-          p_staff_id?: string;
         };
         Returns: Json;
       };
       escalate_overdue: {
-        Args: Record<string, never>;
+        Args: {
+          p_facility_id?: string | null;
+        };
         Returns: {
           task_id: string;
           alert_id: string;

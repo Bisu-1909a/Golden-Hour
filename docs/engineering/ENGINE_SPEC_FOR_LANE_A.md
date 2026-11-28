@@ -236,3 +236,40 @@ CREATE TABLE notification_outbox (
   * `supabase/master_setup.sql` provides a single-file idempotent runner for the entire setup.
   * Background cron runner instructions documented below:
     * Background scheduler / Edge function calls `/rest/v1/rpc/engine_tick` using `SUPABASE_SERVICE_ROLE_KEY` every 10–30 seconds.
+
+---
+
+# Post-Merge SQL Security Audit Resolution (V2.0 Hardening)
+**Addressed to Technical Lead (Member A / Bisu-1909a)**
+**Date**: November 2026 | **Branch**: `e-platform`
+
+### Architectural Decisions Confirmed
+
+1. **Task-Level Contract vs Alert-Level Schema**:
+   * **Decision**: We maintain the **task-level contract** requested by Member A (`next_task_state` / `next_state`), while preserving the alert-level progression (`next_alert_state`).
+   * `claim_task(p_task_id UUID)`: Moves `OPEN` or `ESCALATED` task to `CLAIMED` via atomic compare-and-set, derives staff strictly from `auth.uid()`, logs audit events, sends chimes, and automatically checks if all tasks for the alert are claimed (auto-progressing the alert to `ALL_CLAIMED`).
+   * `next_task_state(p_task_id UUID, p_action TEXT)`: Moves task between `CLAIMED` and `DONE`.
+   * `next_alert_state(p_alert_id UUID, p_action TEXT)`: Transitions alert lifecycle (`ACKNOWLEDGE` -> `ARRIVED` -> `CLOSE`).
+   * `next_state(p_task_id UUID, p_action TEXT)`: Polymorphic dispatcher. Whether Member A calls it with a `task_id` (task contract) or an `alert_id` (alert contract), the function automatically dispatches to the correct state machine without throwing type errors.
+
+2. **`service_role` vs `engine_owner` Role**:
+   * **Decision**: We natively utilize **Supabase `service_role`**.
+   * Standard Supabase environments run API route handlers, Edge Functions, and cron tickers via the `SUPABASE_SERVICE_ROLE_KEY`. Creating a custom Postgres role adds operational overhead and connection-pooling complexity without security advantages.
+   * Privileged engine functions (`engine_tick`, `escalate_overdue`) grant execute to `service_role, postgres`.
+   * Table UPDATE policies on `alerts` and `alert_tasks` permit direct updates exclusively for `service_role`, blocking unauthorized client-side tampering.
+
+---
+
+### Audit Resolution Checklist (All 8 Points Implemented)
+
+| # | Audit Requirement | Implementation Details |
+|---|---|---|
+| **1** | **Advisory Lock in `engine_tick`** | Added `pg_catalog.pg_try_advisory_xact_lock(424242)` to prevent overlapping concurrent cron ticks. Returns `{"success": false, "locked": true}` immediately if another transaction is running. |
+| **2** | **Finalize `next_state`** | Implemented task-level `next_task_state(p_task_id, p_action)` and alert-level `next_alert_state(p_alert_id, p_action)`. Standardized `next_state(p_task_id, p_action)` to satisfy Member A's route handlers. |
+| **3** | **Remove `p_staff_id` from `claim_task`** | Signature is strictly `claim_task(p_task_id UUID)`. Staff identity is extracted exclusively via `auth.uid()` (`SELECT * FROM staff WHERE user_id = auth.uid()`), eliminating any staff ID spoofing vector. |
+| **4** | **Facility/Role Scope for `escalate_overdue`** | Updated signature to `escalate_overdue(p_facility_id UUID DEFAULT NULL)`. When called by authenticated staff, asserts role is `supervisor`/`doctor` and confines scope to caller's facility. `service_role` can run globally or scoped. |
+| **5** | **Purge Old Duplicate Overloads** | Added explicit `DROP FUNCTION IF EXISTS ... CASCADE` before all function declarations in `master_setup.sql` and migration 11 to eliminate conflicting parameter overloads. |
+| **6** | **Strict `SET search_path = ''`** | All `SECURITY DEFINER` functions explicitly set `search_path = ''` and qualify every schema object (`public.alerts`, `public.alert_tasks`, `public.staff`, `pg_catalog.now()`, etc.) to prevent search-path hijacking attacks. |
+| **7** | **Function Ownership & Event RLS** | All functions explicitly executed with `ALTER FUNCTION ... OWNER TO postgres;`. Insert policies on `events`, `cancellations`, and `notification_outbox` allow system/authenticated inserts without RLS blocking. |
+| **8** | **Restrict Direct Authenticated Updates** | Direct client `UPDATE` on `alerts` and `alert_tasks` is restricted to `auth.role() = 'service_role'`. All client state changes MUST pass through the validated RPCs (`claim_task`, `next_state`, `cancel_alert`). |
+
